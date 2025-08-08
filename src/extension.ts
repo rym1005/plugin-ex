@@ -19,6 +19,145 @@ export function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {}
 
+function addUIBackgroundModes(content: string): string {
+    // </dict> 바로 앞에 UIBackgroundModes 추가
+    const dictCloseIndex = content.lastIndexOf('</dict>');
+    if (dictCloseIndex === -1) {
+        throw new Error('올바른 plist 형식이 아닙니다.');
+    }
+
+    const backgroundModesXml = `\t<key>UIBackgroundModes</key>
+\t<array>
+\t\t<string>location</string>
+\t\t<string>fetch</string>
+\t</array>
+`;
+
+    return content.slice(0, dictCloseIndex) + backgroundModesXml + content.slice(dictCloseIndex);
+}
+function processUIBackgroundModes(content: string): string {
+    // UIBackgroundModes가 있는지 확인
+    const hasUIBackgroundModes = content.includes('<key>UIBackgroundModes</key>');
+    
+    if (!hasUIBackgroundModes) {
+        // UIBackgroundModes가 없으면 추가
+        return addUIBackgroundModes(content);
+    }
+    
+    // UIBackgroundModes가 있으면 location과 fetch 확인
+    const hasLocation = content.includes('<string>location</string>');
+    const hasFetch = content.includes('<string>fetch</string>');
+    
+    if (hasLocation && hasFetch) {
+        // 둘 다 있으면 아무것도 하지 않음
+        return content;
+    }
+    
+    // location 또는 fetch가 없으면 추가
+    return updateExistingUIBackgroundModes(content, hasLocation, hasFetch);
+}
+
+function updateInfoPlist() {
+    // Info.plist 파일 찾기
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders) {
+        vscode.window.showErrorMessage('워크스페이스가 열려있지 않습니다.');
+        return;
+    }
+
+    const infoPlistPath = findInfoPlist(workspaceFolders[0].uri.fsPath);
+    if (!infoPlistPath) {
+        vscode.window.showInformationMessage('Info.plist 파일을 찾을 수 없습니다.');
+        return;
+    }
+
+    try {
+        const content = fs.readFileSync(infoPlistPath, 'utf8');
+        const updatedContent = processUIBackgroundModes(content);
+        
+        if (updatedContent !== content) {
+            fs.writeFileSync(infoPlistPath, updatedContent);
+            const relativePath = path.relative(workspaceFolders[0].uri.fsPath, infoPlistPath);
+            vscode.window.showInformationMessage(`UIBackgroundModes가 업데이트되었습니다.\n파일: ${relativePath}`);
+        } else {
+            vscode.window.showInformationMessage('UIBackgroundModes가 이미 올바르게 설정되어 있습니다.');
+        }
+    } catch (error) {
+        vscode.window.showErrorMessage(`Info.plist 처리 중 오류: ${error}`);
+    }
+}
+
+function findInfoPlist(workspacePath: string): string | null {
+    // iOS 프로젝트 구조에서 Info.plist 찾기
+    const possiblePaths = [
+        path.join(workspacePath, 'ios', 'Runner', 'Info.plist'),
+        path.join(workspacePath, 'ios', 'Info.plist'),
+        path.join(workspacePath, 'Info.plist'),
+        // React Native
+        path.join(workspacePath, 'ios', 'YourAppName', 'Info.plist'),
+        // Xamarin
+        path.join(workspacePath, 'iOS', 'Info.plist'),
+    ];
+
+    for (const plistPath of possiblePaths) {
+        if (fs.existsSync(plistPath)) {
+            return plistPath;
+        }
+    }
+
+    // 재귀적으로 찾기
+    return searchInfoPlistRecursively(workspacePath);
+}
+
+function searchInfoPlistRecursively(dirPath: string, depth: number = 0): string | null {
+    if (depth > 3) return null; // 깊이 제한
+
+    try {
+        const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+        
+        for (const entry of entries) {
+            if (entry.name === 'Info.plist' && entry.isFile()) {
+                return path.join(dirPath, entry.name);
+            }
+            
+            if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
+                const result = searchInfoPlistRecursively(path.join(dirPath, entry.name), depth + 1);
+                if (result) return result;
+            }
+        }
+    } catch (error) {
+        // 권한 오류 등 무시
+    }
+
+    return null;
+}
+
+function updateExistingUIBackgroundModes(content: string, hasLocation: boolean, hasFetch: boolean): string {
+    // UIBackgroundModes 배열 찾기
+    const backgroundModesStart = content.indexOf('<key>UIBackgroundModes</key>');
+    const arrayStart = content.indexOf('<array>', backgroundModesStart);
+    const arrayEnd = content.indexOf('</array>', arrayStart);
+    
+    if (arrayStart === -1 || arrayEnd === -1) {
+        throw new Error('UIBackgroundModes 배열을 찾을 수 없습니다.');
+    }
+
+    let arrayContent = content.slice(arrayStart + '<array>'.length, arrayEnd);
+    
+    // 필요한 항목 추가
+    if (!hasLocation) {
+        arrayContent += '\n\t\t<string>location</string>';
+    }
+    if (!hasFetch) {
+        arrayContent += '\n\t\t<string>fetch</string>';
+    }
+    
+    // 배열 내용 교체
+    return content.slice(0, arrayStart + '<array>'.length) + 
+           arrayContent + 
+           content.slice(arrayEnd);
+}
+
 class XcodeSidebarProvider implements vscode.WebviewViewProvider {
     constructor(private readonly _extensionUri: vscode.Uri) {}
 
@@ -407,7 +546,7 @@ class XcodeSidebarProvider implements vscode.WebviewViewProvider {
         </div>
         <div class="step-description">
             spm에서 Loplat SDK를 추가하고 프로젝트에 framework를 추가합니다.
-        </div>
+            </div>
         <button class="step-button" onclick="applyStep(1)" id="button1">
             SDK 설치
         </button>
